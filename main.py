@@ -112,10 +112,7 @@ def ensure_complete(text):
     return text + '…'
 
 async def generate_post(service):
-    if post_text.startswith("Ошибка генерации"):
-        await notify_dev(f"❌ Бот не смог сгенерировать пост: {post_text}")
-        return
-    """Генерирует пост с помощью Gemini."""
+    """Генерирует пост с помощью Gemini, пробуя разные модели при ошибках."""
     prompt = f"""
     {SYSTEM_PROMPT}
     Сегодняшний пост посвящён услуге: **{service}**.
@@ -124,31 +121,43 @@ async def generate_post(service):
     Закончи призывом перейти в бот.
     """
     max_retries = 2
-    model_name = "gemini-1.5-pro"  # стабильная модель
-    for attempt in range(max_retries):
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    max_output_tokens=3072,
-                    temperature=0.7
+    # Список моделей для перебора в случае 404
+    models_to_try = ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.0-pro"]
+    last_error = None
+
+    for model_name in models_to_try:
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Попытка генерации с моделью {model_name}, попытка {attempt+1}")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        max_output_tokens=3072,
+                        temperature=0.7
+                    )
                 )
-            )
-            raw_text = response.text.strip()
-            if raw_text:
-                raw_text = ensure_complete(raw_text)
-            return raw_text
-        except Exception as e:
-            logger.error(f"Ошибка генерации (попытка {attempt+1}): {e}")
-            if "429" in str(e):
-                wait = 60
-                logger.info(f"Превышена квота, ждём {wait} сек...")
-                await asyncio.sleep(wait)
-            else:
-                await notify_dev(f"❌ Ошибка генерации Gemini: {e}")
-                return f"Ошибка генерации: {str(e)}"
-    return "Ошибка генерации: не удалось получить ответ после нескольких попыток."
+                raw_text = response.text.strip()
+                if raw_text:
+                    raw_text = ensure_complete(raw_text)
+                return raw_text
+            except Exception as e:
+                last_error = e
+                logger.error(f"Ошибка генерации (модель {model_name}, попытка {attempt+1}): {e}")
+                if "429" in str(e):
+                    wait = 60
+                    logger.info(f"Превышена квота, ждём {wait} сек...")
+                    await asyncio.sleep(wait)
+                elif "404" in str(e):
+                    # Модель не найдена, пробуем следующую
+                    logger.warning(f"Модель {model_name} не найдена, переключаемся")
+                    break  # выходим из цикла попыток, переходим к следующей модели
+                else:
+                    # Другая ошибка, уведомляем разработчика и возвращаем текст ошибки
+                    await notify_dev(f"❌ Ошибка генерации Gemini: {e}")
+                    return f"Ошибка генерации: {str(e)}"
+    # Если все модели и попытки исчерпаны
+    return f"Ошибка генерации: не удалось получить ответ после всех попыток. Последняя ошибка: {last_error}"
 
 def download_pexels_video(query):
     """Скачивает одно видео с Pexels по запросу."""
@@ -164,7 +173,6 @@ def download_pexels_video(query):
         r.raise_for_status()
         data = r.json()
         if data.get("videos"):
-            # Берём первое видео, первый файл (обычно самый качественный)
             video_url = data["videos"][0]["video_files"][0]["link"]
             with open("stock.mp4", "wb") as f:
                 f.write(requests.get(video_url, timeout=30).content)
@@ -175,16 +183,21 @@ def download_pexels_video(query):
     return False
 
 def create_short(text, trend):
+    """Создаёт короткое видео (Shorts) из текста и фонового видео."""
     temp_files = ["voice.mp3", "stock.mp4", "short.mp4"]
     try:
+        # Озвучка
         tts = gTTS(text[:500], lang='ru')
         tts.save("voice.mp3")
 
+        # Видеофон
         if not download_pexels_video(trend):
+            logger.warning("Не удалось скачать видео, Shorts не будет создан")
             return None
 
         video = VideoFileClip("stock.mp4")
         if video.duration < 1:
+            logger.warning("Скачанное видео слишком короткое")
             video.close()
             return None
 
@@ -201,7 +214,6 @@ def create_short(text, trend):
         video.close()
         audio.close()
 
-        # Возвращаем путь к файлу, только если он существует
         if os.path.exists("short.mp4"):
             return "short.mp4"
         else:
@@ -227,7 +239,6 @@ def split_long_text(text, max_len=4096):
         if len(text) <= max_len:
             parts.append(text)
             break
-        # Ищем последний перенос строки или пробел
         split_pos = text.rfind('\n', 0, max_len)
         if split_pos == -1:
             split_pos = text.rfind(' ', 0, max_len)
@@ -242,7 +253,7 @@ async def main():
     logger.info("=== НАЧАЛО ВЫПОЛНЕНИЯ ===")
 
     # Уведомление разработчику о старте (опционально)
-    await notify_dev("🚀 Бот Азамат запущен и начинает генерацию поста.")
+    await notify_dev("🚀 Бот Тимур запущен и начинает генерацию поста.")
 
     service = get_today_service()
     logger.info(f"Услуга дня: {service}")
@@ -250,6 +261,13 @@ async def main():
     # 1. Генерация поста
     logger.info("1. Генерация поста...")
     post_text = await generate_post(service)
+
+    # Проверка на ошибку генерации
+    if post_text.startswith("Ошибка генерации"):
+        await notify_dev(f"❌ Бот не смог сгенерировать пост: {post_text}")
+        logger.error(f"Генерация не удалась: {post_text}")
+        return
+
     logger.info(f"Сгенерировано {len(post_text)} символов")
 
     # 2. Очистка от чужих ссылок и добавление правильной
@@ -296,7 +314,7 @@ async def main():
         logger.warning("Видео не создано (пропущено)")
 
     logger.info("=== ВЫПОЛНЕНИЕ ЗАВЕРШЕНО ===")
-    await notify_dev("✅ Работа бота Азамат завершена успешно.")
+    await notify_dev("✅ Работа бота Тимур завершена успешно.")
 
 # ----------------------------------------------------------------------
 if __name__ == "__main__":
