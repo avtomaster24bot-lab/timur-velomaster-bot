@@ -200,26 +200,27 @@ def download_pexels_video(query):
     return False
 
 def create_short(voice_text, trend, speed_factor=1.25):
-    """Создаёт видео с ускоренным голосом через pydub."""
-    temp_files = ["voice.mp3", "voice_speed.mp3", "stock.mp4", "short.mp4"]
+    temp_files = ["voice.mp3", "voice_speed.mp3", "stock.mp4"]
+    short_path = "short.mp4"
     try:
-        # 1. Синтез речи
+        # Синтез речи
         tts = gTTS(voice_text, lang='ru')
         tts.save("voice.mp3")
 
-        # 2. Ускорение через pydub
+        # Ускорение через pydub
         audio = AudioSegment.from_mp3("voice.mp3")
-        # Изменяем скорость без изменения высоты тона
         audio = audio.speedup(playback_speed=speed_factor)
         audio.export("voice_speed.mp3", format="mp3")
 
-        # 3. Фоновое видео
+        # Скачивание фонового видео
         if not download_pexels_video(trend):
+            logger.warning("Не удалось скачать видео с Pexels")
             return None
 
         video = VideoFileClip("stock.mp4")
         if video.duration < 1:
             video.close()
+            logger.warning("Скачанное видео слишком короткое")
             return None
 
         duration = min(45, video.duration)
@@ -230,19 +231,23 @@ def create_short(voice_text, trend, speed_factor=1.25):
             audio_clip = audio_clip.subclip(0, duration)
 
         final = video.set_audio(audio_clip)
-        final.write_videofile("short.mp4", fps=24, codec="libx264", audio_codec="aac")
+        final.write_videofile(short_path, fps=24, codec="libx264", audio_codec="aac")
         final.close()
         video.close()
         audio_clip.close()
 
-        if os.path.exists("short.mp4"):
-            return "short.mp4"
+        # Проверяем, что файл действительно создан
+        if os.path.exists(short_path):
+            logger.info(f"Видео успешно создано: {short_path}")
+            return short_path
         else:
+            logger.error(f"Файл {short_path} не найден после записи")
             return None
     except Exception as e:
         logger.error(f"Ошибка при создании Shorts: {e}")
         return None
     finally:
+        # Удаляем только временные файлы (не short.mp4)
         for f in temp_files:
             if os.path.exists(f):
                 try:
