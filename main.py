@@ -9,6 +9,7 @@ from google.genai import types
 from telegram import Bot
 from gtts import gTTS
 from moviepy.editor import VideoFileClip, AudioFileClip
+from moviepy.audio.fx.all import speedx
 from config import BOT_LINK
 
 # Настройка логирования
@@ -93,18 +94,16 @@ def get_available_model():
         models = client.models.list()
         model_names = [m.name for m in models]
         logger.info(f"Доступные модели: {model_names}")
-        # Ищем подходящую модель (содержащую 'flash' или 'pro')
         for name in model_names:
             if 'flash' in name or 'pro' in name:
                 return name
-        # Если не нашли, возвращаем первую попавшуюся (кроме embedding)
         for name in model_names:
             if 'embed' not in name:
                 return name
-        return "gemini-1.5-flash"  # fallback
+        return "gemini-1.5-flash"
     except Exception as e:
         logger.error(f"Не удалось получить список моделей: {e}")
-        return "gemini-1.5-flash"  # fallback
+        return "gemini-1.5-flash"
 
 def ensure_complete(text):
     text = text.rstrip()
@@ -177,9 +176,8 @@ async def generate_post(service):
                 logger.info(f"Превышена квота, ждём {wait} сек...")
                 await asyncio.sleep(wait)
             elif "404" in str(e):
-                # Модель не найдена, пробуем другую
                 logger.warning(f"Модель {model_name} не найдена, пробуем другую")
-                model_name = get_available_model()  # обновляем модель
+                model_name = get_available_model()
             else:
                 return f"Ошибка генерации: {str(e)}"
     return "Ошибка генерации: не удалось получить ответ после нескольких попыток."
@@ -224,6 +222,9 @@ def create_short(voice_text, trend):
         video = video.subclip(0, duration)
 
         audio = AudioFileClip("voice.mp3")
+        # Ускоряем аудио (коэффициент 1.25 – 25% быстрее)
+        audio = audio.fx(speedx, factor=1.25)
+
         if audio.duration > duration:
             audio = audio.subclip(0, duration)
 
