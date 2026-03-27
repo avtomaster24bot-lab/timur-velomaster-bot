@@ -179,25 +179,30 @@ async def generate_post(service):
 
 def download_pexels_video(query):
     if not PEXELS_KEY:
+        logger.warning("PEXELS_API_KEY не задан")
         return False
     headers = {"Authorization": PEXELS_KEY}
     try:
-        r = requests.get(
-            f"https://api.pexels.com/videos/search?query={query}+car+Kazakhstan&per_page=1",
-            headers=headers,
-            timeout=15
-        )
-        r.raise_for_status()
+        url = f"https://api.pexels.com/videos/search?query={query}+car+Kazakhstan&per_page=1"
+        logger.info(f"Запрос к Pexels: {url}")
+        r = requests.get(url, headers=headers, timeout=15)
+        logger.info(f"Статус ответа Pexels: {r.status_code}")
+        if r.status_code != 200:
+            logger.error(f"Ошибка Pexels: {r.text}")
+            return False
         data = r.json()
         if data.get("videos"):
             video_url = data["videos"][0]["video_files"][0]["link"]
+            logger.info(f"Скачиваем видео: {video_url}")
             with open("stock.mp4", "wb") as f:
                 f.write(requests.get(video_url, timeout=30).content)
             return True
+        else:
+            logger.warning("Pexels не вернул видео")
+            return False
     except Exception as e:
-        logger.warning(f"Не удалось скачать видео с Pexels: {e}")
+        logger.error(f"Исключение при скачивании видео: {e}")
         return False
-    return False
 
 def create_short(voice_text, trend, speed_factor=1.25):
     temp_files = ["voice.mp3", "voice_speed.mp3", "stock.mp4"]
