@@ -111,31 +111,42 @@ def ensure_complete(text):
         return text_without_last_word.rstrip() + '…'
     return text + '…'
 
-def select_model():
-    """Динамически выбирает подходящую модель Gemini."""
-    try:
-        models = client.models.list()
-        model_list = list(models)
-        logger.info(f"Найдено моделей: {len(model_list)}")
-        for m in model_list[:5]:
-            logger.info(f"  {m.name}")
-        # Ищем модели с flash или pro, исключая embed
-        candidates = [m.name for m in model_list if "flash" in m.name and "exp" not in m.name and "preview" not in m.name]
-        if candidates:
-            selected = candidates[0]
-            logger.info(f"Выбрана модель: {selected}")
-            return selected
-        for m in model_list:
-            if "embed" not in m.name:
-                logger.info(f"Выбрана модель: {m.name}")
-                return m.name
-        return "gemini-1.5-flash"
-    except Exception as e:
-        logger.error(f"Ошибка получения списка моделей: {e}")
-        return "gemini-1.5-flash"
+def prepare_voice_text(full_text):
+    """
+    Извлекает из полного текста поста короткую выжимку для озвучки видео.
+    Убирает имя "Тимур", заменяет на "AvtoMaster24", обрезает до ~500 символов.
+    """
+    # Удаляем первые предложения, где может быть представление "Тимур"
+    lines = full_text.split('\n')
+    voice_lines = []
+    found_start = False
+    for line in lines:
+        # Пропускаем строки, где явно упоминается "Тимур" в начале
+        if not found_start:
+            if "Тимур" in line and ("С вами" in line or "привет" in line.lower()):
+                continue
+            else:
+                found_start = True
+        voice_lines.append(line)
+    voice_text = '\n'.join(voice_lines).strip()
+    
+    # Заменяем "Тимур" на "AvtoMaster24" (если остались)
+    voice_text = re.sub(r'\bТимур\b', 'AvtoMaster24', voice_text)
+    
+    # Обрезаем до 500 символов, но стараемся не обрывать на середине предложения
+    if len(voice_text) > 500:
+        cut = voice_text[:500]
+        last_period = cut.rfind('.')
+        last_newline = cut.rfind('\n')
+        cut_pos = max(last_period, last_newline)
+        if cut_pos > 0:
+            voice_text = voice_text[:cut_pos+1]
+        else:
+            voice_text = cut + '…'
+    return voice_text
 
 async def generate_post(service):
-    """Генерирует пост с помощью Gemini, выбирая модель динамически."""
+    """Генерирует пост с помощью Gemini."""
     prompt = f"""
     {SYSTEM_PROMPT}
     Сегодняшний пост посвящён услуге: **{service}**.
@@ -143,11 +154,11 @@ async def generate_post(service):
     Используй конкретные преимущества: экономия времени, возможность сравнить цены и отзывы, удобный заказ в один клик.
     Закончи призывом перейти в бот.
     """
-    model_name = select_model()
     max_retries = 2
+    # Используем стабильную модель (проверьте, что у вас есть доступ)
+    model_name = "gemini-2.0-flash-exp"   # или gemini-1.5-flash, если доступна
     for attempt in range(max_retries):
         try:
-            logger.info(f"Попытка генерации с моделью {model_name}, попытка {attempt+1}")
             response = client.models.generate_content(
                 model=model_name,
                 contents=prompt,
@@ -166,6 +177,12 @@ async def generate_post(service):
                 wait = 60
                 logger.info(f"Превышена квота, ждём {wait} сек...")
                 await asyncio.sleep(wait)
+            elif "404" in str(e):
+                # Если модель не найдена, пробуем другую
+                if model_name == "gemini-2.0-flash-exp":
+                    model_name = "gemini-1.5-flash"
+                else:
+                    model_name = "gemini-1.0-pro"
             else:
                 await notify_dev(f"❌ Ошибка генерации Gemini: {e}")
                 return f"Ошибка генерации: {str(e)}"
@@ -194,12 +211,12 @@ def download_pexels_video(query):
         return False
     return False
 
-def create_short(text, trend):
-    """Создаёт короткое видео (Shorts) из текста и фонового видео."""
+def create_short(voice_text, trend):
+    """Создаёт короткое видео (Shorts) из короткого текста и фонового видео."""
     temp_files = ["voice.mp3", "stock.mp4", "short.mp4"]
     try:
         # Озвучка
-        tts = gTTS(text[:500], lang='ru')
+        tts = gTTS(voice_text, lang='ru')
         tts.save("voice.mp3")
 
         # Видеофон
@@ -264,8 +281,7 @@ def split_long_text(text, max_len=4096):
 async def main():
     logger.info("=== НАЧАЛО ВЫПОЛНЕНИЯ ===")
 
-    # Уведомление разработчику о старте (опционально)
-    await notify_dev("🚀 Бот Тимур запущен и начинает генерацию поста.")
+    await notify_dev("🚀 Бот запущен и начинает генерацию поста.")
 
     service = get_today_service()
     logger.info(f"Услуга дня: {service}")
@@ -274,7 +290,6 @@ async def main():
     logger.info("1. Генерация поста...")
     post_text = await generate_post(service)
 
-    # Проверка на ошибку генерации
     if post_text.startswith("Ошибка генерации"):
         await notify_dev(f"❌ Бот не смог сгенерировать пост: {post_text}")
         logger.error(f"Генерация не удалась: {post_text}")
@@ -287,7 +302,7 @@ async def main():
     final_link = BOT_LINK
     post_text += f"\n\nПерейди в бот: {final_link} 🚗"
 
-    # 3. Отправка сообщения в Telegram (с разбивкой, если длинное)
+    # 3. Отправка сообщения в Telegram
     logger.info("2. Отправка сообщения в Telegram...")
     parts = split_long_text(post_text)
     for i, part in enumerate(parts):
@@ -303,9 +318,11 @@ async def main():
             logger.error(f"❌ Ошибка при отправке: {e}")
             await notify_dev(f"❌ Ошибка отправки сообщения: {e}")
 
-    # 4. Создание и отправка видео
+    # 4. Создание и отправка видео (с коротким текстом от лица сервиса)
     logger.info("3. Создание Shorts...")
-    short_path = create_short(post_text, "car service useful tips")
+    voice_text = prepare_voice_text(post_text)
+    logger.info(f"Короткий текст для видео ({len(voice_text)} символов): {voice_text[:100]}...")
+    short_path = create_short(voice_text, "car service useful tips")
     if short_path and os.path.exists(short_path):
         logger.info("Видео создано, отправляем...")
         try:
@@ -326,7 +343,7 @@ async def main():
         logger.warning("Видео не создано (пропущено)")
 
     logger.info("=== ВЫПОЛНЕНИЕ ЗАВЕРШЕНО ===")
-    await notify_dev("✅ Работа бота Тимур завершена успешно.")
+    await notify_dev("✅ Работа бота завершена успешно.")
 
 # ----------------------------------------------------------------------
 if __name__ == "__main__":
