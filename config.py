@@ -1,2 +1,2 @@
-# Ссылка на бота (используется в постах)
-BOT_LINK = "t.me/TimurAvtomaster24bot"
+# Ссылка на бота (используется в постах и видео)
+BOT_LINK = "t.me/avtomaster_24_bot"
