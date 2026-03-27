@@ -121,7 +121,7 @@ async def generate_post(service):
     Закончи призывом перейти в бот.
     """
     max_retries = 2
-    model_name = "gemini-1.5-flash"  # стабильная модель
+    model_name = "gemini-1.5-flash-latest"  # стабильная модель
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
