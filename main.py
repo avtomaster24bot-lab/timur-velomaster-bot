@@ -227,7 +227,7 @@ def download_pexels_video(query):
         return False
 
 def create_short(voice_text, trend, speed_factor=1.25):
-    temp_files = ["voice.mp3", "voice_speed.mp3", "stock.mp4", "background.mp3"]
+    temp_files = ["voice.mp3", "voice_speed.mp3", "stock.mp4"]
     short_path = "short.mp4"
     try:
         # Синтез речи
@@ -256,20 +256,26 @@ def create_short(voice_text, trend, speed_factor=1.25):
         if audio_clip.duration > duration:
             audio_clip = audio_clip.subclip(0, duration)
 
-        # Фоновая музыка (если есть)
+        # --- Фоновая музыка (только если файл существует и читается) ---
+        final_audio = audio_clip
         if os.path.exists("background.mp3"):
-            bg_music = AudioFileClip("background.mp3")
-            # Зацикливаем на всю длительность видео
-            if bg_music.duration < duration:
-                bg_music = bg_music.loop(duration=duration)
-            else:
-                bg_music = bg_music.subclip(0, duration)
-            # Уменьшаем громкость музыки на 25 dB
-            bg_music = bg_music.volumex(0.06)  # примерно -25 dB
-            # Смешиваем с речью
-            final_audio = CompositeAudioClip([audio_clip, bg_music])
-        else:
-            final_audio = audio_clip
+            try:
+                # Проверим, что файл не пустой и читается
+                if os.path.getsize("background.mp3") > 1024:  # хотя бы 1 КБ
+                    bg_music = AudioFileClip("background.mp3")
+                    if bg_music.duration < 0.1:
+                        raise ValueError("Music file too short")
+                    # Зацикливаем на всю длительность видео
+                    if bg_music.duration < duration:
+                        bg_music = bg_music.loop(duration=duration)
+                    else:
+                        bg_music = bg_music.subclip(0, duration)
+                    # Уменьшаем громкость музыки
+                    bg_music = bg_music.volumex(0.06)  # ~ -25 dB
+                    # Смешиваем с речью
+                    final_audio = CompositeAudioClip([audio_clip, bg_music])
+            except Exception as e:
+                logger.warning(f"Не удалось добавить музыку: {e}. Продолжаем без неё.")
 
         final = video.set_audio(final_audio)
         final.write_videofile(short_path, fps=24, codec="libx264", audio_codec="aac")
@@ -290,7 +296,7 @@ def create_short(voice_text, trend, speed_factor=1.25):
         return None
     finally:
         for f in temp_files:
-            if f != "short.mp4" and os.path.exists(f):
+            if os.path.exists(f):
                 try:
                     os.remove(f)
                 except:
