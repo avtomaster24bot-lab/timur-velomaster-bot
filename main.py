@@ -9,7 +9,7 @@ from google.genai import types
 from telegram import Bot
 from gtts import gTTS
 from moviepy.editor import VideoFileClip, AudioFileClip
-from moviepy.audio.fx.speedx import speedx
+from moviepy.audio.fx.all import speedx   # правильный импорт для moviepy 1.0.3
 from config import BOT_LINK
 
 # Настройка логирования
