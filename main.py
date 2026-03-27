@@ -72,7 +72,8 @@ SERVICES = [
 def get_today_service():
     return SERVICES[datetime.date.today().day % len(SERVICES)]
 
-SYSTEM_PROMPT = f"""
+# Системный промпт для основного поста
+SYSTEM_PROMPT_POST = f"""
 Ты — Тимур, помощник водителей Казахстана. Ты представляешь сервис AvtoMaster24 – это агрегатор, который помогает быстро найти и заказать любые автомобильные услуги: от эвакуатора до химчистки.
 Твоя задача: в каждом посте рассказать о **конкретной услуге**, которую можно найти через бот. Не говори, что бот сам оказывает услуги. Наоборот: подчеркивай, что бот помогает сравнить варианты, выбрать надежного исполнителя, вызвать помощь, записаться на СТО и т.д.
 Тон: дружелюбный, честный, живой, без воды.
@@ -83,6 +84,19 @@ SYSTEM_PROMPT = f"""
 
 Длина: 300–400 слов. Не обрывай текст на полуслове.
 Сегодня: {datetime.date.today().strftime("%d %B %Y")}. Учитывай погоду и сезон в Казахстане.
+"""
+
+# Строгий промпт для короткого видео-текста (без имени)
+SYSTEM_PROMPT_VOICE = """
+Ты — голос сервиса AvtoMaster24. Задача: создать короткий текст (30–50 слов) для озвучки видео.
+Текст должен:
+- Назвать услугу.
+- Кратко описать проблему, которую она решает.
+- Завершить призывом: «Найди проверенных исполнителей в боте AvtoMaster24 и закажи помощь за минуту».
+Не используй имя «Тимур», говори от лица сервиса.
+Текст должен быть законченным, без многоточий и кавычек.
+Пример:
+«Нужно открыть авто без ключа? AvtoMaster24 поможет найти мастера рядом. Переходи в бот и решай проблему за минуту!»
 """
 
 # ----------------------------------------------------------------------
@@ -115,40 +129,14 @@ def ensure_complete(text):
         return text_without_last_word.rstrip() + '…'
     return text + '…'
 
-def prepare_voice_text(full_text):
-    lines = full_text.split('\n')
-    voice_lines = []
-    found_start = False
-    for line in lines:
-        if not found_start:
-            if "Тимур" in line and ("С вами" in line or "привет" in line.lower()):
-                continue
-            else:
-                found_start = True
-        voice_lines.append(line)
-    voice_text = '\n'.join(voice_lines).strip()
-    voice_text = re.sub(r'\bТимур\b', 'AvtoMaster24', voice_text)
-    if len(voice_text) > 500:
-        cut = voice_text[:500]
-        last_period = cut.rfind('.')
-        last_newline = cut.rfind('\n')
-        cut_pos = max(last_period, last_newline)
-        if cut_pos > 0:
-            voice_text = voice_text[:cut_pos+1]
-        else:
-            voice_text = cut + '…'
-    return voice_text
-
 async def generate_post(service):
+    """Генерирует длинный пост (300–400 слов)."""
     prompt = f"""
-    {SYSTEM_PROMPT}
+    {SYSTEM_PROMPT_POST}
     Сегодняшний пост посвящён услуге: **{service}**.
-    Расскажи, с какой проблемой сталкиваются водители, и как с помощью бота AvtoMaster24 они могут легко и быстро найти проверенного исполнителя (СТО, эвакуатор, шиномонтаж, автоэлектрика и т.д.).
-    Используй конкретные преимущества: экономия времени, возможность сравнить цены и отзывы, удобный заказ в один клик.
-    Закончи призывом перейти в бот.
     """
     model_name = get_available_model()
-    logger.info(f"Используемая модель: {model_name}")
+    logger.info(f"Генерация поста, модель: {model_name}")
     max_retries = 2
     for attempt in range(max_retries):
         try:
@@ -165,7 +153,7 @@ async def generate_post(service):
                 raw_text = ensure_complete(raw_text)
             return raw_text
         except Exception as e:
-            logger.error(f"Ошибка генерации (попытка {attempt+1}): {e}")
+            logger.error(f"Ошибка генерации поста (попытка {attempt+1}): {e}")
             if "429" in str(e):
                 wait = 60
                 logger.info(f"Превышена квота, ждём {wait} сек...")
@@ -176,6 +164,45 @@ async def generate_post(service):
             else:
                 return f"Ошибка генерации: {str(e)}"
     return "Ошибка генерации: не удалось получить ответ после нескольких попыток."
+
+async def generate_voice_text(service):
+    """Генерирует короткий текст (30–50 слов) для видео."""
+    prompt = f"""
+    {SYSTEM_PROMPT_VOICE}
+    Услуга: **{service}**.
+    """
+    model_name = get_available_model()
+    logger.info(f"Генерация видео-текста, модель: {model_name}")
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    max_output_tokens=200,
+                    temperature=0.4
+                )
+            )
+            raw_text = response.text.strip()
+            if raw_text:
+                # Пост-обработка: убираем лишние кавычки, заменяем многоточия
+                raw_text = raw_text.strip('"“”')
+                if raw_text.endswith('…'):
+                    raw_text = raw_text[:-1] + '.'
+            return raw_text
+        except Exception as e:
+            logger.error(f"Ошибка генерации видео-текста (попытка {attempt+1}): {e}")
+            if "429" in str(e):
+                wait = 60
+                logger.info(f"Превышена квота, ждём {wait} сек...")
+                await asyncio.sleep(wait)
+            elif "404" in str(e):
+                model_name = get_available_model()
+            else:
+                # Заглушка
+                return f"AvtoMaster24: найди лучших мастеров для {service} в нашем боте. Переходи по ссылке!"
+    return "AvtoMaster24: найди проверенных мастеров для вашего авто в нашем боте! Переходи по ссылке."
 
 def download_pexels_video(query):
     if not PEXELS_KEY:
@@ -208,16 +235,13 @@ def create_short(voice_text, trend, speed_factor=1.25):
     temp_files = ["voice.mp3", "voice_speed.mp3", "stock.mp4"]
     short_path = "short.mp4"
     try:
-        # Синтез речи
         tts = gTTS(voice_text, lang='ru')
         tts.save("voice.mp3")
 
-        # Ускорение через pydub
         audio = AudioSegment.from_mp3("voice.mp3")
         audio = audio.speedup(playback_speed=speed_factor)
         audio.export("voice_speed.mp3", format="mp3")
 
-        # Скачивание фонового видео
         if not download_pexels_video(trend):
             logger.warning("Не удалось скачать видео с Pexels")
             return None
@@ -241,7 +265,6 @@ def create_short(voice_text, trend, speed_factor=1.25):
         video.close()
         audio_clip.close()
 
-        # Проверяем, что файл действительно создан
         if os.path.exists(short_path):
             logger.info(f"Видео успешно создано: {short_path}")
             return short_path
@@ -252,7 +275,6 @@ def create_short(voice_text, trend, speed_factor=1.25):
         logger.error(f"Ошибка при создании Shorts: {e}")
         return None
     finally:
-        # Удаляем только временные файлы (не short.mp4)
         for f in temp_files:
             if os.path.exists(f):
                 try:
@@ -284,7 +306,7 @@ async def main():
     service = get_today_service()
     logger.info(f"Услуга дня: {service}")
 
-    # 1. Генерация поста
+    # 1. Генерация длинного поста
     logger.info("1. Генерация поста...")
     post_text = await generate_post(service)
 
@@ -314,10 +336,13 @@ async def main():
         except Exception as e:
             logger.error(f"❌ Ошибка при отправке: {e}")
 
-    # 4. Создание и отправка видео
-    logger.info("3. Создание Shorts...")
-    voice_text = prepare_voice_text(post_text)
-    logger.info(f"Короткий текст для видео ({len(voice_text)} символов): {voice_text[:100]}...")
+    # 4. Генерация короткого текста для видео (отдельно)
+    logger.info("3. Генерация текста для видео...")
+    voice_text = await generate_voice_text(service)
+    logger.info(f"Текст для видео ({len(voice_text)} символов): {voice_text}")
+
+    # 5. Создание и отправка видео
+    logger.info("4. Создание Shorts...")
     short_path = create_short(voice_text, "car service useful tips", speed_factor=1.25)
     if short_path and os.path.exists(short_path):
         logger.info("Видео создано, отправляем...")
