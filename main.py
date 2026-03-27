@@ -129,10 +129,11 @@ def ensure_complete(text):
     return text + '…'
 
 async def generate_with_retry(prompt, max_output_tokens=3072, temperature=0.7, is_long=True):
-    """Универсальная функция генерации с повторными попытками при 503."""
+    """Генерирует текст, повторяя попытки при ошибках квоты (429) и недоступности (503)."""
     model_name = get_available_model()
     logger.info(f"Генерация, модель: {model_name}")
-    delays = [10, 30, 60]  # секунды ожидания
+    # Экспоненциальная задержка: 5, 10, 20, 40 секунд
+    delays = [5, 10, 20, 40]
     for attempt in range(len(delays) + 1):
         try:
             response = client.models.generate_content(
@@ -149,20 +150,22 @@ async def generate_with_retry(prompt, max_output_tokens=3072, temperature=0.7, i
             return raw_text
         except Exception as e:
             logger.error(f"Ошибка генерации (попытка {attempt+1}): {e}")
-            if "503" in str(e):
+            err_str = str(e)
+            if "429" in err_str or "503" in err_str:
                 if attempt < len(delays):
                     wait = delays[attempt]
-                    logger.info(f"Сервис временно недоступен (503), ждём {wait} сек...")
+                    logger.info(f"Лимит или недоступность, ждём {wait} сек...")
                     await asyncio.sleep(wait)
-                    # Пробуем другую модель
+                    # Меняем модель, чтобы сбросить квоту на конкретную модель
                     model_name = get_available_model()
                 else:
                     return None
-            elif "404" in str(e):
+            elif "404" in err_str:
                 logger.warning(f"Модель {model_name} не найдена, пробуем другую")
                 model_name = get_available_model()
             else:
-                return f"Ошибка генерации: {str(e)}"
+                # Неизвестная ошибка – возвращаем текст ошибки
+                return f"Ошибка генерации: {err_str}"
     return None
 
 async def generate_post(service):
