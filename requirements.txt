@@ -1,6 +1,6 @@
 google-genai
 requests
 gtts
-moviepy==1.0.3
+moviepy>=2.0.0
 python-telegram-bot
 imageio-ffmpeg
