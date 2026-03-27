@@ -234,34 +234,33 @@ def download_pexels_video(query):
     except Exception as e:
         logger.error(f"Исключение при скачивании видео: {e}")
         return False
-
 def create_short(voice_text, trend, speed_factor=1.25):
     temp_files = ["voice.mp3", "voice_speed.mp3", "stock.mp4"]
     short_path = "short.mp4"
     try:
+        # синтез речи
         tts = gTTS(voice_text, lang='ru')
         tts.save("voice.mp3")
 
+        # ускорение
         audio = AudioSegment.from_mp3("voice.mp3")
         audio = audio.speedup(playback_speed=speed_factor)
         audio.export("voice_speed.mp3", format="mp3")
 
         if not download_pexels_video(trend):
-            logger.warning("Не удалось скачать видео с Pexels")
             return None
 
         video = VideoFileClip("stock.mp4")
         if video.duration < 1:
             video.close()
-            logger.warning("Скачанное видео слишком короткое")
             return None
 
-        duration = min(45, video.duration)
-        video = video.subclip(0, duration)
-
         audio_clip = AudioFileClip("voice_speed.mp3")
-        if audio_clip.duration > duration:
-            audio_clip = audio_clip.subclip(0, duration)
+        audio_duration = audio_clip.duration
+
+        # обрезаем видео до длины аудио (не более 45 сек)
+        video_duration = min(audio_duration, video.duration, 45)
+        video = video.subclip(0, video_duration)
 
         final = video.set_audio(audio_clip)
         final.write_videofile(short_path, fps=24, codec="libx264", audio_codec="aac")
