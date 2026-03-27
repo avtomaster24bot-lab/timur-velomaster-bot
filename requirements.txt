@@ -1,0 +1,6 @@
+google-genai
+requests
+gtts
+moviepy>=2.0.0
+python-telegram-bot
+imageio-ffmpeg
