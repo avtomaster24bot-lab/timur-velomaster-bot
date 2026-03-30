@@ -184,7 +184,7 @@ async def generate_voice_text(service):
     # Проверка длины
     if len(result) < 80:
         logger.warning(f"Текст слишком короткий ({len(result)} символов). Использую запасной.")
-        return f"Нужна {service}? AvtoMaster24 поможет найти мастера рядом. Переходи в бот и решай проблему за минуту!"
+        return f"Нужна помощь с {service}? VeloMaster24 поможет тебе с японскими велосипедами!"
     return result
 
 def download_pexels_video(query):
