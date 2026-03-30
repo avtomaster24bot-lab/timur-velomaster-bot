@@ -362,7 +362,7 @@ async def main():
                 await TELEGRAM_BOT.send_video(
                     chat_id=CHANNEL_ID,
                     video=video_file,
-                    caption=f"AvtoMaster24 — полезные сервисы для автовладельцев 🚗\n{final_link}"
+                    caption=f"https://t.me/velopark_kz — полезные сервисы для велолюбителей\n{final_link}"
                 )
             logger.info("✅ Видео отправлено")
         except Exception as e:
