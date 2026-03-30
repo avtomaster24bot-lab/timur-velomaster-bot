@@ -176,7 +176,7 @@ async def generate_voice_text(service):
     result = await generate_with_retry(prompt, max_output_tokens=300, temperature=0.5, is_long=False)
     if result is None:
         # Запасной вариант
-        return f"Нужна {service}? AvtoMaster24 поможет найти мастера рядом. Переходи в бот и решай проблему за минуту!"
+        return f"Нужна помощь с {service}? VeloMaster24 поможет тебе с японскими велосипедами!"
     # Пост-обработка
     result = result.strip('"“”')
     if result.endswith('…'):
