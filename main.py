@@ -61,16 +61,20 @@ SYSTEM_PROMPT_POST = f"""
 """
 
 # -------------------- РАБОТА С GEMINI --------------------
-def get_available_model():
-    """Возвращает подходящую модель Gemini."""
+def get_available_model(avoid_model=None):
+    """Возвращает подходящую модель Gemini, исключая указанную."""
     try:
         models = client.models.list()
         model_names = [m.name for m in models]
-        logger.info(f"Доступные модели: {model_names[:5]}...")
-        for name in model_names:
-            if 'flash' in name or 'pro' in name:
-                return name
-        return model_names[0] if model_names else "gemini-2.0-flash"
+        # Фильтруем только flash/pro модели
+        candidates = [m for m in model_names if 'flash' in m or 'pro' in m]
+        if not candidates:
+            candidates = model_names
+        # Исключаем модель, которая не работает
+        if avoid_model and avoid_model in candidates:
+            candidates = [m for m in candidates if m != avoid_model]
+        logger.info(f"Доступные модели-кандидаты: {candidates[:5]}...")
+        return candidates[0] if candidates else "gemini-2.0-flash"
     except Exception as e:
         logger.error(f"Не удалось получить список моделей: {e}")
         return "gemini-2.0-flash"
