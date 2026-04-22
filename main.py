@@ -1,16 +1,12 @@
 import os
 import datetime
-import requests
 import asyncio
 import re
 import logging
 from google import genai
 from google.genai import types
 from telegram import Bot
-from gtts import gTTS
-from moviepy.editor import VideoFileClip, AudioFileClip, CompositeAudioClip
-from pydub import AudioSegment
-from config import BOT_LINK  # убедитесь, что config.py существует и содержит BOT_LINK
+from config import BOT_LINK
 
 # ==================== НАСТРОЙКА ЛОГИРОВАНИЯ ====================
 logging.basicConfig(
@@ -20,17 +16,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==================== ПРОВЕРКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ====================
-required_env = ["GEMINI_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID", "PEXELS_API_KEY"]
-for var in required_env:
-    if not os.getenv(var):
-        logger.error(f"❌ Переменная окружения {var} не задана!")
-        exit(1)
+required_env = ["GEMINI_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"]
+missing = [var for var in required_env if not os.getenv(var)]
+if missing:
+    logger.error(f"❌ Отсутствуют обязательные переменные: {', '.join(missing)}")
+    exit(1)
 
 # ==================== ИНИЦИАЛИЗАЦИЯ КЛИЕНТОВ ====================
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 TELEGRAM_BOT = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
 CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
-PEXELS_KEY = os.getenv("PEXELS_API_KEY")
 
 # ==================== СПИСОК УСЛУГ ====================
 SERVICES = [
@@ -51,7 +46,7 @@ def get_today_service():
     """Выбирает услугу на основе дня месяца."""
     return SERVICES[datetime.date.today().day % len(SERVICES)]
 
-# -------------------- СИСТЕМНЫЕ ПРОМПТЫ (определены до использования) --------------------
+# -------------------- СИСТЕМНЫЙ ПРОМПТ --------------------
 SYSTEM_PROMPT_POST = f"""
 Ты — Тимур, помощник водителей Казахстана. Ты представляешь сервис AvtoMaster24 – это агрегатор, который помогает быстро найти и заказать любые автомобильные услуги: от эвакуатора до химчистки.
 Твоя задача: в каждом посте рассказать о **конкретной услуге**, которую можно найти через бот. Не говори, что бот сам оказывает услуги. Наоборот: подчеркивай, что бот помогает сравнить варианты, выбрать надежного исполнителя, вызвать помощь, записаться на СТО и т.д.
@@ -65,24 +60,13 @@ SYSTEM_PROMPT_POST = f"""
 Сегодня: {datetime.date.today().strftime("%d %B %Y")}. Учитывай погоду и сезон в Казахстане.
 """
 
-SYSTEM_PROMPT_VOICE = """
-Ты — голос сервиса AvtoMaster24. Задача: создать короткий текст для озвучки видео (30–50 слов).
-Текст должен состоять из трёх частей:
-1. Название услуги.
-2. Проблема, которую решает услуга.
-3. Призыв: «Найди проверенных исполнителей в боте AvtoMaster24 и закажи помощь за минуту!»
-Не используй имя «Тимур», говори от лица сервиса.
-Текст должен быть законченным, заканчиваться восклицательным знаком.
-Пример: «Нужно открыть авто без ключа? Захлопнулась дверь, а ключи остались внутри. Найди проверенных исполнителей в боте AvtoMaster24 и закажи помощь за минуту!»
-"""
-
 # -------------------- РАБОТА С GEMINI --------------------
 def get_available_model():
     """Возвращает подходящую модель Gemini."""
     try:
         models = client.models.list()
         model_names = [m.name for m in models]
-        logger.info(f"Доступные модели: {model_names[:5]}...")  # сокращённый вывод
+        logger.info(f"Доступные модели: {model_names[:5]}...")
         for name in model_names:
             if 'flash' in name or 'pro' in name:
                 return name
@@ -105,10 +89,10 @@ def ensure_complete(text):
     return text + '…'
 
 async def generate_with_retry(prompt, max_output_tokens=3072, temperature=0.7, is_long=True):
-    """Генерирует текст с повторными попытками при ошибках квоты/сервера."""
+    """Генерирует текст с повторными попытками при ошибках."""
     model_name = get_available_model()
     logger.info(f"Генерация, модель: {model_name}")
-    delays = [5, 10, 20, 40]  # секунды ожидания между попытками
+    delays = [5, 10, 20, 40]
     for attempt in range(len(delays) + 1):
         try:
             response = client.models.generate_content(
@@ -131,15 +115,13 @@ async def generate_with_retry(prompt, max_output_tokens=3072, temperature=0.7, i
                     wait = delays[attempt]
                     logger.info(f"Лимит или недоступность, ждём {wait} сек...")
                     await asyncio.sleep(wait)
-                    model_name = get_available_model()  # пробуем другую модель
+                    model_name = get_available_model()
                 else:
-                    logger.error("Исчерпаны все попытки из-за 429/503")
                     return None
             elif "404" in err_str:
                 logger.warning(f"Модель {model_name} не найдена, пробуем другую")
                 model_name = get_available_model()
             else:
-                logger.error(f"Неизвестная ошибка: {err_str}")
                 return None
     return None
 
@@ -153,129 +135,6 @@ async def generate_post(service):
     if result is None:
         return "Ошибка генерации: не удалось получить ответ после всех попыток."
     return result
-
-async def generate_voice_text(service):
-    """Генерирует короткий текст для видео."""
-    prompt = f"""
-    {SYSTEM_PROMPT_VOICE}
-    Услуга: **{service}**.
-    """
-    result = await generate_with_retry(prompt, max_output_tokens=300, temperature=0.5, is_long=False)
-    if result is None or len(result) < 30:
-        logger.warning("Не удалось сгенерировать текст, используется запасной вариант")
-        return f"Нужна {service}? AvtoMaster24 поможет найти мастера рядом. Переходи в бот и решай проблему за минуту!"
-    # Очистка от лишних кавычек
-    result = result.strip('"“”')
-    if result.endswith('…'):
-        result = result[:-1] + '.'
-    return result
-
-# -------------------- РАБОТА С ВИДЕО --------------------
-def download_pexels_video(query):
-    """Скачивает первое видео с Pexels по запросу."""
-    if not PEXELS_KEY:
-        logger.warning("PEXELS_API_KEY не задан")
-        return False
-    headers = {"Authorization": PEXELS_KEY}
-    try:
-        # Добавляем "Kazakhstan" для локального контекста
-        url = f"https://api.pexels.com/videos/search?query={query}+car+Kazakhstan&per_page=1"
-        logger.info(f"Запрос к Pexels: {url}")
-        r = requests.get(url, headers=headers, timeout=15)
-        if r.status_code != 200:
-            logger.error(f"Ошибка Pexels: {r.status_code} {r.text}")
-            return False
-        data = r.json()
-        if data.get("videos"):
-            # Берём видеофайл наилучшего качества (обычно первый)
-            video_url = data["videos"][0]["video_files"][0]["link"]
-            logger.info(f"Скачиваем видео: {video_url}")
-            resp = requests.get(video_url, timeout=30)
-            with open("stock.mp4", "wb") as f:
-                f.write(resp.content)
-            return True
-        else:
-            logger.warning("Pexels не вернул видео")
-            return False
-    except Exception as e:
-        logger.error(f"Исключение при скачивании видео: {e}")
-        return False
-
-def create_short(voice_text, trend, speed_factor=1.25):
-    """Создаёт короткое видео (Shorts) с речью, фоновым видео и музыкой."""
-    temp_files = ["voice.mp3", "voice_speed.mp3", "stock.mp4"]
-    short_path = "short.mp4"
-    try:
-        # 1. Синтез речи
-        tts = gTTS(voice_text, lang='ru')
-        tts.save("voice.mp3")
-
-        # 2. Ускорение голоса
-        audio = AudioSegment.from_mp3("voice.mp3")
-        audio = audio.speedup(playback_speed=speed_factor)
-        audio.export("voice_speed.mp3", format="mp3")
-
-        # 3. Скачивание фонового видео
-        if not download_pexels_video(trend):
-            logger.error("Не удалось скачать видео с Pexels")
-            return None
-
-        video = VideoFileClip("stock.mp4")
-        if video.duration < 1:
-            video.close()
-            return None
-
-        # Ограничиваем длительность видео (максимум 45 секунд)
-        duration = min(45, video.duration)
-        video = video.subclip(0, duration)
-
-        # 4. Речевая дорожка
-        audio_clip = AudioFileClip("voice_speed.mp3")
-        if audio_clip.duration > duration:
-            audio_clip = audio_clip.subclip(0, duration)
-
-        # 5. Фоновая музыка (если есть)
-        final_audio = audio_clip
-        if os.path.exists("background.mp3") and os.path.getsize("background.mp3") > 1024:
-            try:
-                bg_music = AudioFileClip("background.mp3")
-                if bg_music.duration > 0:
-                    # Зацикливаем или обрезаем
-                    if bg_music.duration < duration:
-                        bg_music = bg_music.loop(duration=duration)
-                    else:
-                        bg_music = bg_music.subclip(0, duration)
-                    bg_music = bg_music.volumex(0.06)  # громкость 6%
-                    final_audio = CompositeAudioClip([audio_clip, bg_music])
-            except Exception as e:
-                logger.warning(f"Не удалось добавить музыку: {e}")
-
-        # 6. Сборка финального видео
-        final = video.set_audio(final_audio)
-        final.write_videofile(short_path, fps=24, codec="libx264", audio_codec="aac", logger=None)
-        final.close()
-        video.close()
-        audio_clip.close()
-        if 'bg_music' in locals():
-            bg_music.close()
-
-        if os.path.exists(short_path):
-            logger.info(f"Видео успешно создано: {short_path}")
-            return short_path
-        else:
-            logger.error(f"Файл {short_path} не найден после записи")
-            return None
-    except Exception as e:
-        logger.error(f"Ошибка при создании Shorts: {e}")
-        return None
-    finally:
-        # Удаляем временные файлы
-        for f in temp_files:
-            if os.path.exists(f):
-                try:
-                    os.remove(f)
-                except:
-                    pass
 
 # -------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ TELEGRAM --------------------
 def split_long_text(text, max_len=4096):
@@ -309,6 +168,7 @@ async def main():
     if not post_text or post_text.startswith("Ошибка генерации"):
         logger.error(f"Генерация поста не удалась: {post_text}")
         return
+
     logger.info(f"Сгенерировано {len(post_text)} символов")
 
     # Удаляем чужие ссылки и добавляем правильную
@@ -331,39 +191,7 @@ async def main():
         except Exception as e:
             logger.error(f"❌ Ошибка при отправке: {e}")
 
-    # 3. Генерация текста для видео
-    logger.info("3. Генерация текста для видео...")
-    voice_text = await generate_voice_text(service)
-    logger.info(f"Текст для видео ({len(voice_text)} символов): {voice_text}")
-
-    # 4. Создание и отправка видео
-    logger.info("4. Создание Shorts...")
-    short_path = create_short(voice_text, "car service useful tips", speed_factor=1.25)
-    if short_path and os.path.exists(short_path):
-        logger.info("Видео создано, отправляем...")
-        try:
-            with open(short_path, "rb") as video_file:
-                await TELEGRAM_BOT.send_video(
-                    chat_id=CHANNEL_ID,
-                    video=video_file,
-                    caption=f"AvtoMaster24 — полезные сервисы для автовладельцев 🚗\n{final_link}"
-                )
-            logger.info("✅ Видео отправлено")
-        except Exception as e:
-            logger.error(f"❌ Ошибка при отправке видео: {e}")
-        finally:
-            if os.path.exists(short_path):
-                os.remove(short_path)
-    else:
-        logger.warning("Видео не создано (пропущено)")
-
     logger.info("=== ВЫПОЛНЕНИЕ ЗАВЕРШЕНО ===")
 
-if __name__ == "__main__":
-    asyncio.run(main())
-
-    logger.info("=== ВЫПОЛНЕНИЕ ЗАВЕРШЕНО ===")
-
-# ----------------------------------------------------------------------
 if __name__ == "__main__":
     asyncio.run(main())
